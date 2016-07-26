@@ -1,0 +1,145 @@
+#!/bin/busybox sh
+
+# Default PATH differs between shells, and is not automatically exported
+# by klibc dash.  Make it consistent.
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+
+[ -d /proc ] || mkdir /proc
+mount -t proc none /proc
+[ -d /sys ] || mkdir /sys
+mount -t sysfs none /sys
+
+#busybox --install -s
+
+mknod /dev/null c 1 3
+mknod /dev/tty c 5 0
+mknod /dev/console c 5 1
+
+mdev -s
+
+HWDEVICE="$(cat /proc/cpuinfo | grep Hardware | awk '{print $3}' )"
+
+#redirect console to kernel messages for Odroid
+if [ $HWDEVICE == ODROIDC ] || [ $HWDEVICE == ODROID-C2 ]; then
+   OVERLAY=NOWRKDIR
+   exec >/dev/kmsg 2>&1 </dev/console
+else
+   OVERLAY=WITHWRKDIR
+fi
+
+echo "Booting Volumio for" $HWDEVICE
+echo "	This script mounts rootfs RO with an overlay RW layer."
+
+# Do your stuff here.
+
+if [ $OVERLAY == WITHWRKDIR ]; then
+   # For overlayfs version V22 or higher (modulename 'overlay')
+   modprobe overlay
+else
+   # For overlayfs version V20/V21 (modulename ='overlayfs')
+   modprobe overlayfs
+fi
+#modprobe squashfs
+modprobe nls_cp437
+
+# Parse the kernel command line from grub
+
+CMDLINE="$(cat /proc/cmdline)"
+
+parse_disk() {
+  if [ "$(echo $1|cut -c -5)" = "UUID=" ]; then
+    # $1 is a UUID
+    echo $(findfs $1)
+  elif [ "$(echo $1|cut -c -6)" = "LABEL=" ]; then
+    # $1 is a LABEL
+    echo $(findfs $1)
+  elif [ "$(echo $1|cut -c -5)" = "/dev/" ]; then
+    # $1 is a device name
+    echo $1
+  else
+    # $1 is unrecognized.
+    echo "unknown-disk"
+  fi
+}
+
+
+#Check eventually for USB updates (could be vfat or ext4 partion --> mount auto)
+echo "Check for USB updates"
+if [ -e /dev/sda1 ]; then
+  [ -d /mnt/usb ] || mkdir /mnt/usb
+  mount -t auto /dev/sda1 /mnt/usb
+  #If there is a firmware file inside the usb
+  if [ -e /mnt/usb/volumio.fir ]; then
+	echo "Firmware found, updating will take a few minutes, please wait..."
+    #when the partitions are mounted we can launch the update script
+    volumio-init-updater
+  fi
+  if [ -e /mnt/usb/factory_reset ]; then
+    echo "Factory Reset on USB"
+    mkdir /mnt/factory
+    mount -t auto /dev/mmcblk0p1 /mnt/factory
+    echo " " > /mnt/factory/factory_reset
+    umount /mnt/factory
+    rm -r /mnt/factory
+  fi
+  umount /dev/sda1
+  rm -r /mnt/usb
+fi
+
+VOLUMIO_VERSION="$(cat /mnt/static/etc/os-release | grep VOLUMIO_VERSION)"
+
+mkdir boot
+mount -t vfat /dev/mmcblk0p1 /boot
+if [ -e "/boot/resize-volumio-datapart" ]; then
+echo "Re-sizing Volumio data partition"
+  END="$(parted -s /dev/mmcblk0 unit MB print free | grep Free | tail -1 | awk '{print $2}' | grep -o '[0-9]\+')"
+  parted -s /dev/mmcblk0 resizepart 3 ${END}
+  e2fsck -fy /dev/mmcblk0p2
+  resize2fs /dev/mmcblk0p2
+  echo "Volumio data partition succesfully resized"
+  parted -s /dev/mmcblk0 unit MB print
+  rm /boot/resize-volumio-datapart
+fi
+umount /boot
+rm -r /boot
+
+# # 4) mount a filesystem for write access to the static image
+# # unclear: memory size? -o size=1024M
+# [ -d /mnt/ext ] || mkdir -m 777 /mnt/ext
+# mount -t ext4 /dev/mmcblk0p3 /mnt/ext
+# 
+# [ -d /mnt/ext/dyn ] || mkdir -m 777 /mnt/ext/dyn
+# [ -d /mnt/ext/union ] || mkdir -m 777 /mnt/ext/union
+# 
+# # 5) mount the writable overlay to the static image
+# if [ $OVERLAY == WITHWRKDIR ]; then
+#   [ -d /mnt/ext/work ] || mkdir -m 777 /mnt/ext/work
+#   echo "With Option:" $OVERLAY
+#   mount -t overlay -olowerdir=/mnt/static,upperdir=/mnt/ext/dyn,workdir=/mnt/ext/work overlay /mnt/ext/union 
+# else
+#   echo "Without Option:" $OVERLAY
+#   mount -t overlayfs overlayfs /mnt/ext/union -olowerdir=/mnt/static,upperdir=/mnt/ext/dyn
+# fi
+# 
+# [ -d /mnt/ext/union/static ] || mkdir -m 777 /mnt/ext/union/static
+# [ -d /mnt/ext/union/imgpart ] || mkdir -m 777 /mnt/ext/union/imgpart
+# mount --move /mnt/static /mnt/ext/union/static
+# mount --move /mnt/imgpart /mnt/ext/union/imgpart
+# 
+# chmod -R 777 /mnt/ext/union/imgpart
+# 
+# umount /proc
+# umount /sys
+# 
+# echo ${VOLUMIO_VERSION}
+# echo "Finish initramfs, continue booting Volumio"
+#exec switch_root /mnt/ext/union /sbin/init
+
+[ -d /mnt/ext ] || mkdir -p mkdir -m 777 /mnt/ext
+mount /dev/mmcblk0p2 /mnt/ext
+mount /dev/mmcblk0p1 /mnt/ext/boot
+
+exec switch_root /mnt/ext /sbin/init
+
+#echo "Failed to switch_root, dropping to a shell"
+#exec sh
