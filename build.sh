@@ -23,6 +23,7 @@ function HELP {
   echo "-l      --Create docker layer. Docker Repository name as as argument"
   echo "-v      --Version, must be a dot separated number. Example 1.102"
   echo "-p      --Patch, optionally patch the builder"
+  echo "-n      --No squashfs"
   echo -e "Example: Build a Raspberry PI image from scratch, version 2.0 : ./build.sh -b arm -d pi -v 2.0 -l reponame "\\n
   exit 1
 }
@@ -51,7 +52,7 @@ if [ $NUMARGS -eq 0 ]; then
   HELP
 fi
 
-while getopts b:v:d:l:p:e FLAG; do
+while getopts b:v:d:l:p:e:n FLAG; do
   case $FLAG in
     b)
       BUILD=$OPTARG
@@ -69,6 +70,9 @@ while getopts b:v:d:l:p:e FLAG; do
       ;;
     p)
       PATCH=$OPTARG
+      ;;
+    n)
+      NOSQUASH=$OPTARG
       ;;
     h)  #show help
       HELP
@@ -168,7 +172,11 @@ fi
 if [ "$DEVICE" = pi ]; then
   echo 'Writing Raspberry Pi Image File'
   check_os_release "arm" $VERSION $DEVICE
-  sh scripts/raspberryimage.sh -v $VERSION -p $PATCH;
+  if [ -n "$NOSQUASH" ]; then
+    sh scripts/raspberryimage_sdcard.sh -v $VERSION -p $PATCH;
+  else
+    sh scripts/raspberryimage.sh -v $VERSION -p $PATCH;
+  fi
 fi
 if [ "$DEVICE" = udoo ]; then
   echo 'Writing UDOO Image File'
